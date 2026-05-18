@@ -1,0 +1,24 @@
+name: major_guide
+description: "전공길잡이: 진로 기반 과목 추천 및 학습 관리 앱"
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cloud_firestore: ^4.17.5
+  cupertino_icons: ^1.0.8
+  firebase_auth: ^4.20.0
+  firebase_core: ^2.32.0
+  shared_preferences: ^2.2.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
