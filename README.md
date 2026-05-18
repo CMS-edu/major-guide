@@ -18,9 +18,16 @@ flutter pub get
 flutter run
 ```
 
+## Firebase Hosting 배포
+
+```bash
+flutter build web
+firebase deploy --only hosting
+```
+
 ## Firebase 연결
 
-앱은 시작 시 Firebase 초기화를 시도합니다. Firebase 설정이 없거나 Anonymous Auth가 꺼져 있으면 자동으로 로컬 저장 모드로 실행됩니다.
+앱은 시작 시 Firebase 초기화를 시도합니다. Firebase 연결이 실패하면 자동으로 로컬 저장 모드로 실행됩니다.
 
 Firebase를 연결하려면 Firebase 프로젝트에서 다음을 활성화하세요.
 
