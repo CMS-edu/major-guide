@@ -34,20 +34,29 @@ class AppStart {
     final localStore = LocalStudyTimeStore();
 
     try {
-      if (Firebase.apps.isEmpty) {
-        final options = firebaseOptionsFromDartDefines();
-        if (options == null) {
-          await Firebase.initializeApp(
-            options: DefaultFirebaseOptions.currentPlatform,
-          );
-        } else {
-          await Firebase.initializeApp(options: options);
-        }
-      }
+      final options = firebaseOptionsFromDartDefines() ??
+          DefaultFirebaseOptions.currentPlatform;
+      await Firebase.initializeApp(options: options);
 
       return AppStart(
         localStudyTimeStore: localStore,
         firebaseStatus: FirebaseConnectionStatus.connected(),
+      );
+    } on FirebaseException catch (error) {
+      if (error.code == 'duplicate-app') {
+        return AppStart(
+          localStudyTimeStore: localStore,
+          firebaseStatus: FirebaseConnectionStatus.connected(),
+        );
+      }
+
+      debugPrint(
+        'Firebase is not ready. Falling back to local storage: '
+        '${error.code} ${error.message}',
+      );
+      return AppStart(
+        localStudyTimeStore: localStore,
+        firebaseStatus: FirebaseConnectionStatus.localOnly(),
       );
     } catch (error) {
       debugPrint(
