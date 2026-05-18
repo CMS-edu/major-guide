@@ -5,7 +5,7 @@ void main() {
   testWidgets('home screen shows the main navigation actions', (tester) async {
     await tester.pumpWidget(
       MajorGuideApp(
-        studyTimeStore: LocalStudyTimeStore(),
+        localStudyTimeStore: LocalStudyTimeStore(),
         firebaseStatus: FirebaseConnectionStatus.localOnly(),
       ),
     );

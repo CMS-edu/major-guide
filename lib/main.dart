@@ -15,16 +15,19 @@ Future<void> main() async {
   final appStart = await AppStart.bootstrap();
   runApp(
     MajorGuideApp(
-      studyTimeStore: appStart.studyTimeStore,
+      localStudyTimeStore: appStart.localStudyTimeStore,
       firebaseStatus: appStart.firebaseStatus,
     ),
   );
 }
 
 class AppStart {
-  const AppStart({required this.studyTimeStore, required this.firebaseStatus});
+  const AppStart({
+    required this.localStudyTimeStore,
+    required this.firebaseStatus,
+  });
 
-  final StudyTimeStore studyTimeStore;
+  final LocalStudyTimeStore localStudyTimeStore;
   final FirebaseConnectionStatus firebaseStatus;
 
   static Future<AppStart> bootstrap() async {
@@ -42,26 +45,16 @@ class AppStart {
         }
       }
 
-      final currentUser = FirebaseAuth.instance.currentUser;
-      final user =
-          currentUser ?? (await FirebaseAuth.instance.signInAnonymously()).user;
-      if (user == null) {
-        throw StateError('Firebase anonymous sign-in failed.');
-      }
-
       return AppStart(
-        studyTimeStore: FirestoreStudyTimeStore(
-          uid: user.uid,
-          localFallback: localStore,
-        ),
-        firebaseStatus: FirebaseConnectionStatus.connected(uid: user.uid),
+        localStudyTimeStore: localStore,
+        firebaseStatus: FirebaseConnectionStatus.connected(),
       );
     } catch (error) {
       debugPrint(
         'Firebase is not ready. Falling back to local storage: $error',
       );
       return AppStart(
-        studyTimeStore: localStore,
+        localStudyTimeStore: localStore,
         firebaseStatus: FirebaseConnectionStatus.localOnly(),
       );
     }
@@ -108,12 +101,14 @@ class FirebaseConnectionStatus {
   final String message;
   final String? uid;
 
-  factory FirebaseConnectionStatus.connected({required String uid}) {
+  factory FirebaseConnectionStatus.connected({String? uid, String? email}) {
     return FirebaseConnectionStatus(
       connected: true,
       uid: uid,
       title: 'Firebase 연결됨',
-      message: '공부 시간 기록이 Firestore에 저장됩니다.',
+      message: email == null
+          ? '로그인 후 공부 시간 기록이 Firestore에 저장됩니다.'
+          : '$email 계정으로 Firestore에 저장됩니다.',
     );
   }
 
@@ -241,11 +236,11 @@ Map<String, int> decodeStudyTotals(Map<String, dynamic> raw) {
 class MajorGuideApp extends StatefulWidget {
   const MajorGuideApp({
     super.key,
-    required this.studyTimeStore,
+    required this.localStudyTimeStore,
     required this.firebaseStatus,
   });
 
-  final StudyTimeStore studyTimeStore;
+  final LocalStudyTimeStore localStudyTimeStore;
   final FirebaseConnectionStatus firebaseStatus;
 
   @override
@@ -255,6 +250,28 @@ class MajorGuideApp extends StatefulWidget {
 class _MajorGuideAppState extends State<MajorGuideApp> {
   List<String> _careerSubjects = [];
   List<String> _careerCategories = [];
+
+  StudyTimeStore get _studyTimeStore {
+    final user = FirebaseAuth.instance.currentUser;
+    if (widget.firebaseStatus.connected && user != null && !user.isAnonymous) {
+      return FirestoreStudyTimeStore(
+        uid: user.uid,
+        localFallback: widget.localStudyTimeStore,
+      );
+    }
+    return widget.localStudyTimeStore;
+  }
+
+  FirebaseConnectionStatus get _currentFirebaseStatus {
+    final user = FirebaseAuth.instance.currentUser;
+    if (widget.firebaseStatus.connected && user != null && !user.isAnonymous) {
+      return FirebaseConnectionStatus.connected(
+        uid: user.uid,
+        email: user.email ?? '로그인 사용자',
+      );
+    }
+    return widget.firebaseStatus;
+  }
 
   void _rememberRecommendation(
     List<CareerPath> paths,
@@ -299,8 +316,8 @@ class _MajorGuideAppState extends State<MajorGuideApp> {
         builder: (_) => StudyTimerScreen(
           careerCategories: _careerCategories,
           careerSubjects: _careerSubjects,
-          studyTimeStore: widget.studyTimeStore,
-          firebaseStatus: widget.firebaseStatus,
+          studyTimeStore: _studyTimeStore,
+          firebaseStatus: _currentFirebaseStatus,
         ),
       ),
     );
@@ -327,34 +344,71 @@ class _MajorGuideAppState extends State<MajorGuideApp> {
           elevation: 0,
         ),
       ),
-      home: HomeScreen(
-        firebaseStatus: widget.firebaseStatus,
-        onOpenDirectInput: (context) {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => DirectInputScreen(
-                onShowResult: (paths, sourceTitle) =>
-                    _openResult(context, paths, sourceTitle: sourceTitle),
+      home: widget.firebaseStatus.connected
+          ? StreamBuilder<User?>(
+              stream: FirebaseAuth.instance.authStateChanges(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
+
+                final user = snapshot.data;
+                if (user != null && user.isAnonymous) {
+                  FirebaseAuth.instance.signOut();
+                  return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
+
+                if (user == null) {
+                  return AuthScreen(firebaseStatus: widget.firebaseStatus);
+                }
+
+                return _buildHome(
+                  FirebaseConnectionStatus.connected(
+                    uid: user.uid,
+                    email: user.email ?? '로그인 사용자',
+                  ),
+                  user,
+                );
+              },
+            )
+          : _buildHome(widget.firebaseStatus, null),
+    );
+  }
+
+  Widget _buildHome(FirebaseConnectionStatus status, User? user) {
+    return HomeScreen(
+      firebaseStatus: status,
+      userEmail: user?.email,
+      onSignOut: user == null ? null : () => FirebaseAuth.instance.signOut(),
+      onOpenDirectInput: (context) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => DirectInputScreen(
+              onShowResult: (paths, sourceTitle) =>
+                  _openResult(context, paths, sourceTitle: sourceTitle),
+            ),
+          ),
+        );
+      },
+      onOpenSurvey: (context) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => SurveyScreen(
+              onShowResult: (paths, sourceTitle, categories) => _openResult(
+                context,
+                paths,
+                sourceTitle: sourceTitle,
+                categories: categories,
               ),
             ),
-          );
-        },
-        onOpenSurvey: (context) {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => SurveyScreen(
-                onShowResult: (paths, sourceTitle, categories) => _openResult(
-                  context,
-                  paths,
-                  sourceTitle: sourceTitle,
-                  categories: categories,
-                ),
-              ),
-            ),
-          );
-        },
-        onOpenStudyTimer: _openStudyTimer,
-      ),
+          ),
+        );
+      },
+      onOpenStudyTimer: _openStudyTimer,
     );
   }
 }
@@ -370,6 +424,229 @@ class AppColors {
   static const border = Color(0xFFD9E4F2);
   static const success = Color(0xFF1C8A5A);
   static const warning = Color(0xFFE08A1E);
+}
+
+class AuthScreen extends StatefulWidget {
+  const AuthScreen({super.key, required this.firebaseStatus});
+
+  final FirebaseConnectionStatus firebaseStatus;
+
+  @override
+  State<AuthScreen> createState() => _AuthScreenState();
+}
+
+class _AuthScreenState extends State<AuthScreen> {
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+
+  bool _isSignUp = false;
+  bool _loading = false;
+  String? _errorMessage;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final email = _emailController.text.trim();
+    final password = _passwordController.text.trim();
+
+    if (email.isEmpty || password.isEmpty) {
+      setState(() => _errorMessage = '이메일과 비밀번호를 모두 입력해주세요.');
+      return;
+    }
+
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      if (_isSignUp) {
+        await FirebaseAuth.instance.createUserWithEmailAndPassword(
+          email: email,
+          password: password,
+        );
+      } else {
+        await FirebaseAuth.instance.signInWithEmailAndPassword(
+          email: email,
+          password: password,
+        );
+      }
+    } on FirebaseAuthException catch (error) {
+      setState(() => _errorMessage = authErrorMessage(error));
+    } catch (_) {
+      setState(() => _errorMessage = '로그인 처리 중 문제가 생겼습니다. 잠시 후 다시 시도해주세요.');
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Icon(
+                    Icons.school_rounded,
+                    size: 56,
+                    color: AppColors.navy,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    '전공길잡이',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: AppColors.text,
+                      fontSize: 34,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    '계정으로 로그인하면 공부 시간이 Firestore에 저장됩니다.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: AppColors.muted,
+                      fontSize: 15,
+                      height: 1.45,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  SectionCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          _isSignUp ? '회원가입' : '로그인',
+                          style: const TextStyle(
+                            color: AppColors.text,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: _emailController,
+                          keyboardType: TextInputType.emailAddress,
+                          decoration: authInputDecoration(
+                            label: '이메일',
+                            icon: Icons.mail_outline_rounded,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: _passwordController,
+                          obscureText: true,
+                          decoration: authInputDecoration(
+                            label: '비밀번호',
+                            icon: Icons.lock_outline_rounded,
+                          ),
+                          onSubmitted: (_) => _loading ? null : _submit(),
+                        ),
+                        if (_errorMessage != null) ...[
+                          const SizedBox(height: 14),
+                          FeedbackBox(
+                            icon: Icons.error_outline_rounded,
+                            color: AppColors.warning,
+                            text: _errorMessage!,
+                          ),
+                        ],
+                        const SizedBox(height: 18),
+                        ElevatedButton.icon(
+                          icon: Icon(
+                            _isSignUp
+                                ? Icons.person_add_alt_1_rounded
+                                : Icons.login_rounded,
+                          ),
+                          label: Text(_isSignUp ? '회원가입하기' : '로그인하기'),
+                          onPressed: _loading ? null : _submit,
+                          style: actionButtonStyle(AppColors.navy),
+                        ),
+                        const SizedBox(height: 8),
+                        TextButton(
+                          onPressed: _loading
+                              ? null
+                              : () {
+                                  setState(() {
+                                    _isSignUp = !_isSignUp;
+                                    _errorMessage = null;
+                                  });
+                                },
+                          child: Text(
+                            _isSignUp ? '이미 계정이 있어요' : '계정이 없나요? 회원가입',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  StorageStatusStrip(status: widget.firebaseStatus),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+InputDecoration authInputDecoration({
+  required String label,
+  required IconData icon,
+}) {
+  return InputDecoration(
+    labelText: label,
+    prefixIcon: Icon(icon),
+    filled: true,
+    fillColor: Colors.white,
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(18),
+      borderSide: const BorderSide(color: AppColors.border),
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(18),
+      borderSide: const BorderSide(color: AppColors.border),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(18),
+      borderSide: const BorderSide(color: AppColors.blue, width: 1.6),
+    ),
+  );
+}
+
+String authErrorMessage(FirebaseAuthException error) {
+  switch (error.code) {
+    case 'email-already-in-use':
+      return '이미 가입된 이메일입니다. 로그인으로 진행해주세요.';
+    case 'invalid-email':
+      return '이메일 형식을 확인해주세요.';
+    case 'weak-password':
+      return '비밀번호는 6자 이상으로 입력해주세요.';
+    case 'user-not-found':
+    case 'wrong-password':
+    case 'invalid-credential':
+      return '이메일 또는 비밀번호가 올바르지 않습니다.';
+    case 'operation-not-allowed':
+      return 'Firebase 콘솔에서 이메일/비밀번호 로그인을 먼저 켜주세요.';
+    case 'network-request-failed':
+      return '네트워크 연결을 확인해주세요.';
+    default:
+      return '인증 오류가 발생했습니다. ${error.message ?? error.code}';
+  }
 }
 
 class CareerPath {
@@ -506,12 +783,16 @@ class HomeScreen extends StatelessWidget {
   const HomeScreen({
     super.key,
     required this.firebaseStatus,
+    required this.userEmail,
+    required this.onSignOut,
     required this.onOpenDirectInput,
     required this.onOpenSurvey,
     required this.onOpenStudyTimer,
   });
 
   final FirebaseConnectionStatus firebaseStatus;
+  final String? userEmail;
+  final VoidCallback? onSignOut;
   final void Function(BuildContext context) onOpenDirectInput;
   final void Function(BuildContext context) onOpenSurvey;
   final void Function(BuildContext context) onOpenStudyTimer;
@@ -567,6 +848,10 @@ class HomeScreen extends StatelessWidget {
               ),
               const SizedBox(height: 26),
               StorageStatusStrip(status: firebaseStatus),
+              if (userEmail != null) ...[
+                const SizedBox(height: 12),
+                UserAccountStrip(email: userEmail!, onSignOut: onSignOut),
+              ],
               const SizedBox(height: 16),
               PrimaryActionButton(
                 icon: Icons.edit_note_rounded,
@@ -1211,6 +1496,12 @@ class _StudyTimerScreenState extends State<StudyTimerScreen> {
       _currentSeconds = 0;
     });
     await _saveTotals();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${widget.studyTimeStore.label}에 공부 시간이 저장되었습니다.'),
+      ),
+    );
   }
 
   void _resetCurrentTimer() {
@@ -1231,6 +1522,10 @@ class _StudyTimerScreenState extends State<StudyTimerScreen> {
       }
     });
     await _saveTotals();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${widget.studyTimeStore.label} 기록을 초기화했습니다.')),
+    );
   }
 
   @override
@@ -1871,6 +2166,65 @@ class StorageStatusStrip extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class UserAccountStrip extends StatelessWidget {
+  const UserAccountStrip({
+    super.key,
+    required this.email,
+    required this.onSignOut,
+  });
+
+  final String email;
+  final VoidCallback? onSignOut;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.lightBlue,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.account_circle_rounded, color: AppColors.navy),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '로그인 계정',
+                  style: TextStyle(
+                    color: AppColors.text,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  email,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.muted,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          TextButton.icon(
+            onPressed: onSignOut,
+            icon: const Icon(Icons.logout_rounded, size: 18),
+            label: const Text('로그아웃'),
+            style: TextButton.styleFrom(foregroundColor: AppColors.navy),
           ),
         ],
       ),
